@@ -8,11 +8,11 @@
 训练相关的代码,以后有时间再完善
 
 ## 2. 项目结构
-MyLlama.py: 手搓的Llama模型文件  
-run_official_model.py: 运行transformers版模型的,分别使用generate函数与手生成搓函数调用,并保存初始化后的模型参数  
-run_my_model.py: 运行手搓的模型,加载transformers版模型的参数,使用手搓生成函数调用,验证推理结果是否一致  
-RoPE.ipynb: RoPE选择位置编码的原理,以及Meta版和transformers版的两种实现方法的详解  
-llama_struct.svg: B站up主良睦路程序员制作的transformers版llama模型的结构示意图,用于辅助理解
+MyLlama.py:              手搓的Llama模型文件  
+run_official_model.py:   运行transformers版模型的,分别使用generate函数与手生成搓函数调用,并保存初始化后的模型参数  
+run_my_model.py:         运行手搓的模型,加载transformers版模型的参数,使用手搓生成函数调用,验证推理结果是否一致  
+RoPE.ipynb:              RoPE旋转位置编码的原理,以及Meta版和transformers版的两种实现方法的详解  
+llama_struct.svg:        B站up主良睦路程序员制作的transformers版llama模型的结构示意图,用于辅助理解
 
 ## 3. 一些细节问题
 transformers版llama模型的KV-Cache机制的代码,由于历史版本的兼容性问题,以及新版本pytorch算子的兼容性问题  
