@@ -4,7 +4,7 @@
 与其说是手搓,不如说是基于transformers==4.36.0的llama源码进行简化与重构  
 保留了LlamaForCausalLM的核心结构与计算逻辑,并且进行了详细的注释  
 手搓的模型在MyLlama.py文件中, 去掉了所有transformers的依赖,仅基于pytorch即可运行  
-目前仅实现了与transformers版LlamaForCausalLM的参数互相加载,以及相同参数下相同推理输入  
+目前仅实现了与transformers版LlamaForCausalLM的参数互相加载,以及相同参数下,相同的输入可以推理得到相同的输出   
 训练相关的代码,以后有时间再完善
 
 ## 2. 项目结构
