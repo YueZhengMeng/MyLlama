@@ -19,9 +19,11 @@ class LlamaRMSNorm(nn.Module):
     def forward(self, hidden_states):
         # 计算每个隐藏状态向量的长度
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        # 应用标准化公式,防止除以零
+
+        # 应用标准化公式,epsilon用于防止除以零
         # rsqrt(x) = 1 / sqrt(x)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+
         # 乘以可学习的权重参数,对隐藏状态进行调整
         return self.weight * hidden_states
 
@@ -55,10 +57,12 @@ class LlamaRotaryEmbedding(nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
+
         # i是词向量中每个维度的位置下标
         # 计算公式中的 1/(10000^(2i/dim)),即 theta
         # 得到一个(dim/2,)维的向量
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
+
         # 如果一个参数不参与梯度下降,但又希望保存model的时候将其保存下来
         # 这个时候就可以用register_buffer
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -71,18 +75,22 @@ class LlamaRotaryEmbedding(nn.Module):
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.max_seq_len_cached = seq_len
         # 初始化一个tensor [0, 1, 2, 3, ...],(max_seq_len_cached,)维
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+
         # 如果使用线性放缩(LinearScaling)实现对llama的长度扩展
         # 在这里用t除以放缩因子scaling_factor
         # 比如使llama的上下文长度从2048扩展到4096,t = t / 2
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+
         # (max_seq_len_cached,) X (dim/2,) -> (max_seq_len_cached, dim/2)
         # freqs第0行是inv_freq*0,第1行是inv_freq*1,第2行是inv_freq*2,...
         # freqs即公式中的 m*theta
         freqs = torch.outer(t, self.inv_freq)
+
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        # (max_len, dim/2) -> (max_len, dim), 相当于把freqs的每一行复制一遍
+        # (max_len, dim/2) -> (max_len, dim), 这里的cat操作相当于把freqs的每一行复制一遍
         # freqs的每一行是: m * [theta_0, theta_1, ..., theta_(dim/2-1), theta_0, theta_1, ..., theta_(dim/2-1)]
         emb = torch.cat((freqs, freqs), dim=-1)
+
         # 取emb的cos和sin,保存
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
@@ -107,6 +115,7 @@ def rotate_half(x):
     # 因为线性层是无序的,不依赖维度顺序信息,并不一定要求按照维度顺序一正一负两两组合对词向量进行取负数
     # [q_0, q_1, ..., q_{d/2-1}, q_{d/2}, q_{d/2+1}, ..., q_{d-1}] ->
     # [-q_{d/2}, -q_{d/2+1}, ..., -q_{d-1}, q_0, q_1, ..., q_{d/2-1}]
+    # 具体原理与公式见本项目中的RoPE.ipynb
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
@@ -155,6 +164,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     # (batch, num_key_value_heads, seqlen, head_dim) -> (batch, num_key_value_heads, 1, seqlen, head_dim)
     # -> (batch, num_key_value_heads, n_rep, seqlen, head_dim)
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+
     # -> (batch, num_key_value_heads * n_rep, seqlen, head_dim)
     # 其中 num_key_value_heads * n_rep = num_heads
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
@@ -225,18 +235,19 @@ class Cache:
             # 之后的forward,将新的key_states和value_states加入cache
             self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=-2)
             self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=-2)
-        # 返回更新后的key_states和value_states
+        # 返回更新(cat)后的key_states和value_states
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
     # 我也不知道为什么,保存和加载KV-Cache的时候必须用这两个函数为Tuple一下再变回去
     # 直接把Cache类原样传递给下一轮forward不行吗？明明相关的调用代码中判断都写好了
-    # 调试发现,第一次forward时,past_key_values是None,导致全局变量use_legacy_cache为True
+    # 调试发现,第一次forward时,past_key_values是None,导致LlamaModel的forward函数中的变量use_legacy_cache为True
     # 该变量使得第一次forward结束时,触发了to_legacy_cache,将next_decoder_cache从Cache类转为了Tuple,传递给下一次forward
     # 之后的forward,又会因为past_key_value是Tuple,继续use_legacy_cache设置True,之后触发from_legacy_cache函数,将Tuple转换回Cache类
     # 绕这么一圈子,可能是为了兼容旧版本的transformers库,也可能是新版pytorch算子的兼容性问题
     # 毕竟,即使目前最新版的源码中,KV-Cache的机制优化还处于TODO待重构状态
     def to_legacy_cache(self) -> Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor]]:
         """Converts the `DynamicCache` instance into the its equivalent in the legacy cache format."""
+        # Cache类转为Tuple
         legacy_cache = ()
         for layer_idx in range(len(self)):
             legacy_cache += ((self.key_cache[layer_idx], self.value_cache[layer_idx]),)
@@ -245,6 +256,7 @@ class Cache:
     @classmethod
     def from_legacy_cache(cls, past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None):
         """Converts a cache in the legacy cache format into an equivalent `DynamicCache`."""
+        # Tuple转为Cache类
         cache = cls()
         if past_key_values is not None:
             for layer_idx in range(len(past_key_values)):
@@ -417,6 +429,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         # 这里返回值的数量与形状存在不确定和不严格的问题
+        # 个人认为像LlamaAttention的forward方法那样,将不需要返回的值设为None是更合理的方法
         # 但是transformers库源码就是这么写的,后面的代码则是写了一个判断来适配
         outputs = (hidden_states,)
 
@@ -473,6 +486,7 @@ class LlamaModel(nn.Module):
         self.vocab_size = config.vocab_size
         # 词向量的embedding层,padding_idx会被编码成全0的向量
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # 总共num_hidden_layers层的DecoderLayer
         self.layers = nn.ModuleList(
             [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -583,6 +597,7 @@ class LlamaModel(nn.Module):
         next_cache = None
         if use_cache:
             # 保存本次forward的KV-Cache,用于下次forward
+            # 注意这里的use_legacy_cache,它的值的异常导致了一些问题,详细分析见本文件231行到237行的注释
             next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
@@ -634,7 +649,9 @@ class LlamaForCausalLM(nn.Module):
             return_dict=return_dict,
         )
 
-        # 将基座模型的输出传入全连接层,映射到vocab_size维度
+        # 将基座模型的输出传入全连接层,映射到vocab_size维
+        # 相当于一个类别数为vocab_size的分类任务
+        # logits值最大的维度对应的即是next token
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
         logits = logits.float()
@@ -643,7 +660,9 @@ class LlamaForCausalLM(nn.Module):
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
+            # 用前n-1个token(下标[0,seq_len-1])
             shift_logits = logits[..., :-1, :].contiguous()
+            # 预测后n-1个token(下标[1,seq_len])
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
